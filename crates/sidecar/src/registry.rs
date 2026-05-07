@@ -11,8 +11,7 @@
 
 use std::{
     collections::BTreeMap,
-    env,
-    fs,
+    env, fs,
     fs::OpenOptions,
     io::{BufRead, BufReader, Read},
     path::{Path, PathBuf},
@@ -134,9 +133,18 @@ pub struct LoadedDescriptor {
 #[derive(Debug)]
 pub enum RegistryError {
     EnvNotSet,
-    Io { path: PathBuf, error: std::io::Error },
-    Parse { path: PathBuf, error: toml::de::Error },
-    DuplicateApp { app: String, paths: Vec<PathBuf> },
+    Io {
+        path: PathBuf,
+        error: std::io::Error,
+    },
+    Parse {
+        path: PathBuf,
+        error: toml::de::Error,
+    },
+    DuplicateApp {
+        app: String,
+        paths: Vec<PathBuf>,
+    },
 }
 
 impl std::fmt::Display for RegistryError {
@@ -277,11 +285,25 @@ pub struct SpawnResult {
 
 #[derive(Debug)]
 pub enum SpawnError {
-    Io { context: String, error: std::io::Error },
-    UnexpectedReady { role: String, line: String },
-    EarlyExit { context: String, log_path: Option<PathBuf> },
-    Timeout { context: String, log_path: Option<PathBuf> },
-    ReadyChannelMissing { context: String },
+    Io {
+        context: String,
+        error: std::io::Error,
+    },
+    UnexpectedReady {
+        role: String,
+        line: String,
+    },
+    EarlyExit {
+        context: String,
+        log_path: Option<PathBuf>,
+    },
+    Timeout {
+        context: String,
+        log_path: Option<PathBuf>,
+    },
+    ReadyChannelMissing {
+        context: String,
+    },
 }
 
 impl std::fmt::Display for SpawnError {
@@ -303,10 +325,9 @@ impl std::fmt::Display for SpawnError {
                 ),
                 None => write!(f, "{context}: timed out waiting for ready line"),
             },
-            SpawnError::ReadyChannelMissing { context } => write!(
-                f,
-                "{context}: stdout was not piped; cannot read ready line"
-            ),
+            SpawnError::ReadyChannelMissing { context } => {
+                write!(f, "{context}: stdout was not piped; cannot read ready line")
+            }
         }
     }
 }
@@ -438,7 +459,13 @@ pub fn spawn_sidecar(
                     context: format!("{} ready check", loaded.descriptor.app),
                 })?;
             let line = read_ready_from_stdout(stdout, options)?;
-            validate_ready_line(loaded, &line, &options.namespace, options.mode, &expectation.role)?;
+            validate_ready_line(
+                loaded,
+                &line,
+                &options.namespace,
+                options.mode,
+                &expectation.role,
+            )?;
             Some(line)
         }
         (Some(expectation), SpawnStdio::Detached) => {
@@ -446,7 +473,13 @@ pub fn spawn_sidecar(
                 .as_deref()
                 .expect("detached spawn must have produced a log path");
             let line = read_ready_from_log(&mut child, path, options)?;
-            validate_ready_line(loaded, &line, &options.namespace, options.mode, &expectation.role)?;
+            validate_ready_line(
+                loaded,
+                &line,
+                &options.namespace,
+                options.mode,
+                &expectation.role,
+            )?;
             Some(line)
         }
         (None, _) => None,
@@ -550,10 +583,7 @@ fn redirect_detached_output(
     let log_path = layout.app_log_path(app);
     let parent = log_path.parent().ok_or_else(|| SpawnError::Io {
         context: format!("log path has no parent: {}", log_path.display()),
-        error: std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "log path has no parent",
-        ),
+        error: std::io::Error::new(std::io::ErrorKind::InvalidInput, "log path has no parent"),
     })?;
     fs::create_dir_all(parent).map_err(|error| SpawnError::Io {
         context: format!("failed to create {}", parent.display()),
@@ -669,7 +699,10 @@ launch = { kind = "cargo", manifest_path = "apps/tauri/src-tauri/Cargo.toml", ca
         let tauri = &manifest.sidecars[1];
         assert_eq!(tauri.app, "tauri");
         assert!(tauri.stamp_via_env);
-        assert_eq!(tauri.cwd.as_deref(), Some(Path::new("apps/tauri/src-tauri")));
+        assert_eq!(
+            tauri.cwd.as_deref(),
+            Some(Path::new("apps/tauri/src-tauri"))
+        );
         assert!(tauri.ready.is_none());
     }
 
@@ -752,9 +785,7 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
         assert_eq!(args[3], "--");
         assert_eq!(args[4], "serve");
         // Remaining args should be stamp args; verify shape.
-        assert!(args[5..]
-            .iter()
-            .any(|a| a == "--stim-stamp-app=agents"));
+        assert!(args[5..].iter().any(|a| a == "--stim-stamp-app=agents"));
         assert!(args[5..]
             .iter()
             .any(|a| a == "--stim-stamp-namespace=design"));
