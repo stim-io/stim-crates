@@ -8,3 +8,4 @@ license.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 stim-platform.workspace = true
+toml = "0.8"
