@@ -4,6 +4,8 @@ pub mod layout;
 pub mod process;
 pub mod ready;
 pub mod registry;
+#[path = "io/runtime.rs"]
 pub mod runtime;
 pub mod stamp;
+#[path = "io/stdout.rs"]
 pub mod stdout;

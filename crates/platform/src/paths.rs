@@ -6,7 +6,7 @@ pub fn workspace_root() -> PathBuf {
     if let Some(root) = workspace_root_from_env() {
         return root;
     }
-    if let Some(root) = workspace_root_from_current_dir() {
+    if let Some(root) = workspace_root_from_cwd() {
         return root;
     }
     manifest_workspace_root()
@@ -25,7 +25,7 @@ fn workspace_root_from_env() -> Option<PathBuf> {
     )
 }
 
-fn workspace_root_from_current_dir() -> Option<PathBuf> {
+fn workspace_root_from_cwd() -> Option<PathBuf> {
     let current = std::env::current_dir().ok()?;
     find_workspace_root(&current)
 }
