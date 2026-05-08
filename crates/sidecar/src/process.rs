@@ -91,10 +91,10 @@ fn process_stamp_env(pid: u32) -> Option<Vec<(String, String)>> {
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Some(parse_stamp_env_from_ps(&stdout))
+    Some(parse_stamp_ps_env(&stdout))
 }
 
-fn parse_stamp_env_from_ps(output: &str) -> Vec<(String, String)> {
+fn parse_stamp_ps_env(output: &str) -> Vec<(String, String)> {
     output
         .split_whitespace()
         .filter_map(|part| {

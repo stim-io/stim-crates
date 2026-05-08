@@ -19,7 +19,7 @@ fn workspace_root_env_wins() {
 }
 
 #[test]
-fn dev_root_uses_workspace_root() {
+fn dev_root_uses_workspace() {
     let _guard = ENV_LOCK.lock().unwrap();
     let temp = std::env::temp_dir();
     std::env::set_var(WORKSPACE_ROOT_ENV, &temp);
