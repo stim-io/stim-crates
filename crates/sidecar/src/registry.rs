@@ -39,10 +39,17 @@ pub const REGISTRIES_ENV: &str = "STIM_DEV_REGISTRIES";
 pub const DEFAULT_READY_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Top-level shape of a `sidecars.toml`.
+///
+/// `project` identifies the product owner of this manifest (e.g. `stim`
+/// or `stim-agents`) and forms the first half of the registry's
+/// `(project, app)` lookup key. Both fields are required so the manifest
+/// is self-describing — the dev CLI never has to reverse-engineer
+/// project identity from a manifest's filesystem path.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SidecarManifest {
     #[serde(default = "default_manifest_version")]
     pub manifest_version: u32,
+    pub project: String,
     #[serde(default)]
     pub sidecars: Vec<SidecarDescriptor>,
 }
@@ -122,9 +129,11 @@ pub enum LaunchSpec {
 }
 
 /// A descriptor as loaded from a specific manifest file. Keeps the
-/// owning manifest_dir so relative paths can be resolved at spawn time.
+/// owning project name + manifest_dir so callers can resolve
+/// `(project, app)` lookups and relative paths at spawn time.
 #[derive(Debug, Clone)]
 pub struct LoadedDescriptor {
+    pub project: String,
     pub descriptor: SidecarDescriptor,
     pub manifest_dir: PathBuf,
     pub manifest_path: PathBuf,
@@ -141,7 +150,12 @@ pub enum RegistryError {
         path: PathBuf,
         error: toml::de::Error,
     },
+    DuplicateProject {
+        project: String,
+        paths: Vec<PathBuf>,
+    },
     DuplicateApp {
+        project: String,
         app: String,
         paths: Vec<PathBuf>,
     },
@@ -159,9 +173,22 @@ impl std::fmt::Display for RegistryError {
             RegistryError::Parse { path, error } => {
                 write!(f, "failed to parse {}: {error}", path.display())
             }
-            RegistryError::DuplicateApp { app, paths } => write!(
+            RegistryError::DuplicateProject { project, paths } => write!(
                 f,
-                "sidecar app {app:?} is declared in multiple manifests: {}",
+                "project {project:?} is declared by multiple manifests: {}",
+                paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            RegistryError::DuplicateApp {
+                project,
+                app,
+                paths,
+            } => write!(
+                f,
+                "sidecar app {app:?} is declared twice within project {project:?}: {}",
                 paths
                     .iter()
                     .map(|p| p.display().to_string())
@@ -197,22 +224,31 @@ pub fn load_manifest(path: &Path) -> Result<SidecarManifest, RegistryError> {
 }
 
 /// Load all manifests from `STIM_DEV_REGISTRIES` and flatten their
-/// descriptors into a single list with manifest provenance attached.
-/// Returns an error if any descriptor `app` collides across manifests.
+/// descriptors into a single list with project + manifest provenance
+/// attached. Returns an error if two manifests claim the same project,
+/// or if a single project repeats an app name.
 pub fn load_registries(paths: &[PathBuf]) -> Result<Vec<LoadedDescriptor>, RegistryError> {
     let mut loaded = Vec::new();
-    let mut seen: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    let mut projects_seen: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    let mut apps_seen: BTreeMap<(String, String), Vec<PathBuf>> = BTreeMap::new();
     for path in paths {
         let manifest = load_manifest(path)?;
+        let project = manifest.project.clone();
+        projects_seen
+            .entry(project.clone())
+            .or_default()
+            .push(path.clone());
         let manifest_dir = path
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
         for descriptor in manifest.sidecars {
-            seen.entry(descriptor.app.clone())
+            apps_seen
+                .entry((project.clone(), descriptor.app.clone()))
                 .or_default()
                 .push(path.clone());
             loaded.push(LoadedDescriptor {
+                project: project.clone(),
                 descriptor,
                 manifest_dir: manifest_dir.clone(),
                 manifest_path: path.clone(),
@@ -220,13 +256,54 @@ pub fn load_registries(paths: &[PathBuf]) -> Result<Vec<LoadedDescriptor>, Regis
         }
     }
 
-    for (app, paths) in seen {
+    for (project, paths) in projects_seen {
         if paths.len() > 1 {
-            return Err(RegistryError::DuplicateApp { app, paths });
+            return Err(RegistryError::DuplicateProject { project, paths });
+        }
+    }
+
+    for ((project, app), paths) in apps_seen {
+        if paths.len() > 1 {
+            return Err(RegistryError::DuplicateApp {
+                project,
+                app,
+                paths,
+            });
         }
     }
 
     Ok(loaded)
+}
+
+/// Look up a single descriptor by `(project, app)`.
+pub fn find_descriptor<'a>(
+    loaded: &'a [LoadedDescriptor],
+    project: &str,
+    app: &str,
+) -> Option<&'a LoadedDescriptor> {
+    loaded
+        .iter()
+        .find(|d| d.project == project && d.descriptor.app == app)
+}
+
+/// All descriptors that belong to `project`, in manifest declaration order.
+pub fn descriptors_for_project<'a>(
+    loaded: &'a [LoadedDescriptor],
+    project: &str,
+) -> Vec<&'a LoadedDescriptor> {
+    loaded.iter().filter(|d| d.project == project).collect()
+}
+
+/// All registered project names, in their first-seen declaration order.
+pub fn projects(loaded: &[LoadedDescriptor]) -> Vec<&str> {
+    let mut seen: Vec<&str> = Vec::new();
+    for descriptor in loaded {
+        let name = descriptor.project.as_str();
+        if !seen.contains(&name) {
+            seen.push(name);
+        }
+    }
+    seen
 }
 
 /// Convenience: read env, load all paths, return descriptors.
@@ -639,11 +716,12 @@ mod tests {
     fn parses_minimal_manifest() {
         let toml = r#"
 manifest_version = 1
+project = "stim-agents"
 
 [[sidecars]]
-app = "agents"
+app = "sidecar"
 launch.kind = "cargo"
-launch.manifest_path = "Cargo.toml"
+launch.manifest_path = "apps/sidecar/Cargo.toml"
 launch.args = ["serve"]
 
 [sidecars.ready]
@@ -651,9 +729,10 @@ role = "agents-runtime"
 "#;
         let manifest: SidecarManifest = toml::from_str(toml).expect("parse");
         assert_eq!(manifest.manifest_version, 1);
+        assert_eq!(manifest.project, "stim-agents");
         assert_eq!(manifest.sidecars.len(), 1);
         let s = &manifest.sidecars[0];
-        assert_eq!(s.app, "agents");
+        assert_eq!(s.app, "sidecar");
         assert_eq!(s.ready.as_ref().unwrap().role, "agents-runtime");
         match &s.launch {
             LaunchSpec::Cargo {
@@ -663,7 +742,7 @@ role = "agents-runtime"
                 bin,
                 cargo_args,
             } => {
-                assert_eq!(manifest_path, &PathBuf::from("Cargo.toml"));
+                assert_eq!(manifest_path, &PathBuf::from("apps/sidecar/Cargo.toml"));
                 assert_eq!(args, &vec!["serve".to_string()]);
                 assert!(package.is_none());
                 assert!(bin.is_none());
@@ -676,6 +755,7 @@ role = "agents-runtime"
     fn parses_multi_sidecar_manifest_with_optional_fields() {
         let toml = r#"
 manifest_version = 1
+project = "stim"
 
 [[sidecars]]
 app = "controller"
@@ -689,6 +769,7 @@ cwd = "apps/tauri/src-tauri"
 launch = { kind = "cargo", manifest_path = "apps/tauri/src-tauri/Cargo.toml", cargo_args = ["--no-default-features"] }
 "#;
         let manifest: SidecarManifest = toml::from_str(toml).expect("parse");
+        assert_eq!(manifest.project, "stim");
         assert_eq!(manifest.sidecars.len(), 2);
 
         let controller = &manifest.sidecars[0];
@@ -707,17 +788,18 @@ launch = { kind = "cargo", manifest_path = "apps/tauri/src-tauri/Cargo.toml", ca
     }
 
     #[test]
-    fn rejects_duplicate_app_across_manifests() {
+    fn rejects_duplicate_project_across_manifests() {
         let dir = fixture_dir();
-        let manifest_a = dir.join("dup_a.toml");
-        let manifest_b = dir.join("dup_b.toml");
+        let manifest_a = dir.join("dup_proj_a.toml");
+        let manifest_b = dir.join("dup_proj_b.toml");
         fs::create_dir_all(&dir).unwrap();
         fs::write(
             &manifest_a,
             r#"
 manifest_version = 1
+project = "stim"
 [[sidecars]]
-app = "agents"
+app = "controller"
 launch = { kind = "cargo", manifest_path = "Cargo.toml" }
 "#,
         )
@@ -726,8 +808,9 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
             &manifest_b,
             r#"
 manifest_version = 1
+project = "stim"
 [[sidecars]]
-app = "agents"
+app = "renderer"
 launch = { kind = "cargo", manifest_path = "Cargo.toml" }
 "#,
         )
@@ -735,12 +818,91 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
 
         let err = load_registries(&[manifest_a.clone(), manifest_b.clone()]).unwrap_err();
         match err {
-            RegistryError::DuplicateApp { app, .. } => assert_eq!(app, "agents"),
-            other => panic!("expected DuplicateApp, got {other:?}"),
+            RegistryError::DuplicateProject { project, .. } => assert_eq!(project, "stim"),
+            other => panic!("expected DuplicateProject, got {other:?}"),
         }
 
         let _ = fs::remove_file(&manifest_a);
         let _ = fs::remove_file(&manifest_b);
+    }
+
+    #[test]
+    fn rejects_duplicate_app_within_project() {
+        let dir = fixture_dir();
+        let manifest = dir.join("dup_app.toml");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            &manifest,
+            r#"
+manifest_version = 1
+project = "stim"
+[[sidecars]]
+app = "tauri"
+launch = { kind = "cargo", manifest_path = "Cargo.toml" }
+[[sidecars]]
+app = "tauri"
+launch = { kind = "cargo", manifest_path = "Cargo.toml" }
+"#,
+        )
+        .unwrap();
+
+        let err = load_registries(std::slice::from_ref(&manifest)).unwrap_err();
+        match err {
+            RegistryError::DuplicateApp { project, app, .. } => {
+                assert_eq!(project, "stim");
+                assert_eq!(app, "tauri");
+            }
+            other => panic!("expected DuplicateApp, got {other:?}"),
+        }
+
+        let _ = fs::remove_file(&manifest);
+    }
+
+    #[test]
+    fn allows_same_app_name_across_different_projects() {
+        let dir = fixture_dir();
+        let manifest_stim = dir.join("proj_stim.toml");
+        let manifest_agents = dir.join("proj_agents.toml");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            &manifest_stim,
+            r#"
+manifest_version = 1
+project = "stim"
+[[sidecars]]
+app = "tauri"
+launch = { kind = "cargo", manifest_path = "Cargo.toml" }
+"#,
+        )
+        .unwrap();
+        fs::write(
+            &manifest_agents,
+            r#"
+manifest_version = 1
+project = "stim-agents"
+[[sidecars]]
+app = "tauri"
+launch = { kind = "cargo", manifest_path = "Cargo.toml" }
+"#,
+        )
+        .unwrap();
+
+        let loaded = load_registries(&[manifest_stim.clone(), manifest_agents.clone()])
+            .expect("project namespace separates app names");
+        assert_eq!(loaded.len(), 2);
+        assert!(find_descriptor(&loaded, "stim", "tauri").is_some());
+        assert!(find_descriptor(&loaded, "stim-agents", "tauri").is_some());
+        assert!(find_descriptor(&loaded, "stim", "missing").is_none());
+
+        let stim_descs = descriptors_for_project(&loaded, "stim");
+        assert_eq!(stim_descs.len(), 1);
+        assert_eq!(stim_descs[0].descriptor.app, "tauri");
+
+        let project_names = projects(&loaded);
+        assert_eq!(project_names, vec!["stim", "stim-agents"]);
+
+        let _ = fs::remove_file(&manifest_stim);
+        let _ = fs::remove_file(&manifest_agents);
     }
 
     #[test]
@@ -766,6 +928,7 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
         let manifest_dir = PathBuf::from("/tmp/example/stim-agents");
         let manifest_path = manifest_dir.join("sidecars.toml");
         let loaded = LoadedDescriptor {
+            project: "stim-agents".into(),
             descriptor,
             manifest_dir: manifest_dir.clone(),
             manifest_path,
