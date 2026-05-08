@@ -120,17 +120,6 @@ pub struct SidecarDescriptor {
     /// inherits `STIM_AGENTS_ENDPOINT` from `agents.endpoint`, etc.
     #[serde(default)]
     pub inherits_env: Vec<InheritEnvBinding>,
-
-    /// Inspect capabilities this sidecar exposes (e.g. `runtime`,
-    /// `instances`, `screenshot`). The CLI uses this to dispatch
-    /// `inspect <capability>` to the correct sidecar without
-    /// hardcoding which sidecar owns which capability.
-    ///
-    /// At runtime stim-dev validates the manifest claim against the
-    /// sidecar's actual `/inspect/capabilities` endpoint (when
-    /// reachable), warning on drift.
-    #[serde(default)]
-    pub inspect: Option<InspectSpec>,
 }
 
 /// Ready-line expectation block.
@@ -161,36 +150,6 @@ pub struct InheritEnvBinding {
     /// current chain context; endpoint paths reference the
     /// captured ready line.
     pub from: String,
-}
-
-/// Inspect-capability spec.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct InspectSpec {
-    /// Capability names this sidecar serves. The CLI maps each
-    /// `inspect <capability>` call to whichever sidecar in the
-    /// project lists this capability.
-    #[serde(default)]
-    pub capabilities: Vec<String>,
-    /// How the sidecar serves inspect requests. Default is `http`,
-    /// which means stim-dev makes HTTP requests to the sidecar's
-    /// captured endpoint at `/inspect/<capability>`. Tauri hosts
-    /// that expose inspect through Tauri commands declare
-    /// `endpoint_kind = "tauri-ipc"` (validated by manifest but
-    /// addressed through their own HTTP service in practice; see
-    /// each Tauri host crate for the in-process bridge).
-    #[serde(default = "default_inspect_endpoint_kind")]
-    pub endpoint_kind: InspectEndpointKind,
-}
-
-fn default_inspect_endpoint_kind() -> InspectEndpointKind {
-    InspectEndpointKind::Http
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum InspectEndpointKind {
-    Http,
-    TauriIpc,
 }
 
 /// Process launch instructions.
@@ -1233,7 +1192,6 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
             env: Default::default(),
             endpoint_env: None,
             inherits_env: Vec::new(),
-            inspect: None,
         };
 
         let manifest_dir = PathBuf::from("/tmp/example/stim-agents");
@@ -1281,7 +1239,6 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
             env: Default::default(),
             endpoint_env: None,
             inherits_env: Vec::new(),
-            inspect: None,
         };
 
         let manifest_dir = PathBuf::from("/tmp/example/stim-agents");
@@ -1333,7 +1290,7 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
     }
 
     #[test]
-    fn parses_inherits_env_and_endpoint_env_and_inspect_fields() {
+    fn parses_inherits_env_and_endpoint_env_fields() {
         let toml = r#"
 manifest_version = 1
 project = "stim"
@@ -1343,13 +1300,11 @@ app = "agents"
 launch = { kind = "cargo", manifest_path = "Cargo.toml", args = ["serve"] }
 ready = { role = "agents-runtime" }
 endpoint_env = "STIM_AGENTS_ENDPOINT"
-inspect = { capabilities = ["runtime", "instances", "profiles"] }
 
 [[sidecars]]
 app = "tauri"
 stamp_via_env = true
 launch = { kind = "cargo", manifest_path = "apps/tauri/src-tauri/Cargo.toml" }
-inspect = { capabilities = ["host", "screenshot"], endpoint_kind = "tauri-ipc" }
 inherits_env = [
   { name = "STIM_AGENTS_ENDPOINT", from = "agents.endpoint" },
   { name = "STIM_AGENTS_INSTANCE_ID", from = "agents.instance_id" },
@@ -1360,19 +1315,12 @@ inherits_env = [
 
         let agents = &manifest.sidecars[0];
         assert_eq!(agents.endpoint_env.as_deref(), Some("STIM_AGENTS_ENDPOINT"));
-        let inspect = agents.inspect.as_ref().expect("inspect spec parses");
-        assert_eq!(
-            inspect.capabilities,
-            vec!["runtime", "instances", "profiles"]
-        );
-        assert_eq!(inspect.endpoint_kind, InspectEndpointKind::Http);
+        assert!(agents.inherits_env.is_empty());
 
         let tauri = &manifest.sidecars[1];
         assert_eq!(tauri.inherits_env.len(), 2);
         assert_eq!(tauri.inherits_env[0].name, "STIM_AGENTS_ENDPOINT");
         assert_eq!(tauri.inherits_env[0].from, "agents.endpoint");
-        let tauri_inspect = tauri.inspect.as_ref().expect("inspect spec parses");
-        assert_eq!(tauri_inspect.endpoint_kind, InspectEndpointKind::TauriIpc);
     }
 
     #[test]
