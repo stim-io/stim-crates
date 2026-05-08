@@ -3,8 +3,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_NAMESPACE: &str = "default";
+pub const SIDECAR_APP_ENV: &str = "STIM_SIDECAR_APP";
 pub const SIDECAR_NAMESPACE_ENV: &str = "STIM_SIDECAR_NAMESPACE";
 pub const SIDECAR_MODE_ENV: &str = "STIM_SIDECAR_MODE";
+pub const SIDECAR_SOURCE_ENV: &str = "STIM_SIDECAR_SOURCE";
 pub const SOURCE_APP_PACKAGED: &str = "app:packaged";
 pub const SOURCE_APP_TAURI: &str = "app:tauri";
 pub const SOURCE_TOOL_STIM_DEV: &str = "tool:stim-dev";
