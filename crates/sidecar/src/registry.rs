@@ -519,7 +519,15 @@ pub fn build_command(
     options: &SpawnOptions,
 ) -> Command {
     let stamp = build_stamp(&loaded.descriptor, &options.namespace, options.mode);
-    let stamp_args = create_stamp_args(&stamp);
+    // When `stamp_via_env` is set, the sidecar reads the stamp
+    // exclusively from environment variables — appending stamp
+    // flags on argv breaks strict CLI parsers (e.g. vite's CAC
+    // rejects unknown options). When false, stamp flows on argv.
+    let stamp_args = if loaded.descriptor.stamp_via_env {
+        Vec::new()
+    } else {
+        create_stamp_args(&stamp)
+    };
 
     let mut cmd = match &loaded.descriptor.launch {
         LaunchSpec::Cargo { .. } => Command::new("cargo"),
@@ -1301,10 +1309,13 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
         assert_eq!(args[0], "-C");
         assert_eq!(args[1], "apps/renderer");
         assert_eq!(args[2], "dev");
-        // Stamp args are appended even for shell launches; consumers
-        // that don't accept argv stamps opt into stamp_via_env (which
-        // also surfaces the namespace + mode in the env block).
-        assert!(args.iter().any(|a| a == "--stim-stamp-app=renderer"));
+        // stamp_via_env=true suppresses argv stamp args entirely.
+        // The stamp transports purely via env vars, so strict-CLI
+        // sidecars (vite's CAC, etc.) don't reject unknown flags.
+        assert!(
+            !args.iter().any(|a| a.starts_with("--stim-stamp-")),
+            "stamp_via_env should suppress argv stamp flags"
+        );
 
         // stamp_via_env propagates STIM_SIDECAR_NAMESPACE / _MODE.
         let envs: Vec<(String, Option<String>)> = cmd
