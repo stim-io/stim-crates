@@ -61,8 +61,8 @@ fn default_manifest_version() -> u32 {
 /// Declarative description of a single sidecar app.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SidecarDescriptor {
-    /// Identity for stamps and CLI lookup. Must be unique across all
-    /// loaded manifests.
+    /// Identity for stamps and CLI lookup. Must be unique within
+    /// a single manifest's project.
     pub app: String,
 
     /// How to launch the sidecar process.
@@ -96,6 +96,41 @@ pub struct SidecarDescriptor {
     /// Static environment variables to set on the spawned process.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
+
+    /// Name of the env var that exposes this sidecar's endpoint to
+    /// downstream consumers. When set, the captured ready-line
+    /// endpoint is published under this key in the project chain
+    /// context, so other sidecars can claim it via `inherits_env`.
+    ///
+    /// Example: `endpoint_env = "STIM_AGENTS_ENDPOINT"` on the agents
+    /// sidecar lets a Tauri host declare
+    /// `inherits_env = [{ name = "STIM_AGENTS_ENDPOINT", from = "agents.endpoint" }]`.
+    #[serde(default)]
+    pub endpoint_env: Option<String>,
+
+    /// Env-var bindings inherited from earlier-launched sidecars in
+    /// the chain. Each entry says "set env var `name` to the value of
+    /// `from`", where `from` is one of:
+    ///   - `<sidecar>.endpoint` — captured ready-line endpoint
+    ///   - `<sidecar>.instance_id` — captured ready-line instance id
+    ///   - `<sidecar>.endpoint_env` — value of that sidecar's
+    ///     `endpoint_env` (transitive convenience).
+    ///
+    /// Used to model dependencies declaratively: stim's Tauri host
+    /// inherits `STIM_AGENTS_ENDPOINT` from `agents.endpoint`, etc.
+    #[serde(default)]
+    pub inherits_env: Vec<InheritEnvBinding>,
+
+    /// Inspect capabilities this sidecar exposes (e.g. `runtime`,
+    /// `instances`, `screenshot`). The CLI uses this to dispatch
+    /// `inspect <capability>` to the correct sidecar without
+    /// hardcoding which sidecar owns which capability.
+    ///
+    /// At runtime stim-dev validates the manifest claim against the
+    /// sidecar's actual `/inspect/capabilities` endpoint (when
+    /// reachable), warning on drift.
+    #[serde(default)]
+    pub inspect: Option<InspectSpec>,
 }
 
 /// Ready-line expectation block.
@@ -105,6 +140,57 @@ pub struct ReadyExpectation {
     /// the ready line carries this role and a stamp matching the one
     /// the spawner injected.
     pub role: String,
+
+    /// When set, the spawner does NOT expect a structured
+    /// `stim-sidecar-ready` JSON line on stdout. Instead it watches
+    /// stdout for a line matching this regex, captures group 1 as the
+    /// endpoint URL (e.g. vite's `Local: http://127.0.0.1:1234/`),
+    /// and synthesizes a ready-line internally. Used for shell
+    /// sidecars that don't emit our native protocol.
+    #[serde(default)]
+    pub stdout_pattern: Option<String>,
+}
+
+/// One inherits-env binding.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct InheritEnvBinding {
+    /// Env var name set on the spawned sidecar.
+    pub name: String,
+    /// Source path: `<sidecar>.endpoint`, `<sidecar>.instance_id`,
+    /// or `<sidecar>.endpoint_env`. Sidecars are looked up in the
+    /// current chain context; endpoint paths reference the
+    /// captured ready line.
+    pub from: String,
+}
+
+/// Inspect-capability spec.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct InspectSpec {
+    /// Capability names this sidecar serves. The CLI maps each
+    /// `inspect <capability>` call to whichever sidecar in the
+    /// project lists this capability.
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// How the sidecar serves inspect requests. Default is `http`,
+    /// which means stim-dev makes HTTP requests to the sidecar's
+    /// captured endpoint at `/inspect/<capability>`. Tauri hosts
+    /// that expose inspect through Tauri commands declare
+    /// `endpoint_kind = "tauri-ipc"` (validated by manifest but
+    /// addressed through their own HTTP service in practice; see
+    /// each Tauri host crate for the in-process bridge).
+    #[serde(default = "default_inspect_endpoint_kind")]
+    pub endpoint_kind: InspectEndpointKind,
+}
+
+fn default_inspect_endpoint_kind() -> InspectEndpointKind {
+    InspectEndpointKind::Http
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum InspectEndpointKind {
+    Http,
+    TauriIpc,
 }
 
 /// Process launch instructions.
@@ -562,28 +648,45 @@ pub fn spawn_sidecar(
                 .ok_or_else(|| SpawnError::ReadyChannelMissing {
                     context: format!("{} ready check", loaded.descriptor.app),
                 })?;
-            let line = read_ready_from_stdout(stdout, options)?;
-            validate_ready_line(
-                loaded,
-                &line,
-                &options.namespace,
-                options.mode,
-                &expectation.role,
-            )?;
+            let line = if let Some(pattern) = expectation.stdout_pattern.as_deref() {
+                synthesize_ready_from_pattern(stdout, pattern, loaded, options, &expectation.role)?
+            } else {
+                let line = read_ready_from_stdout(stdout, options)?;
+                validate_ready_line(
+                    loaded,
+                    &line,
+                    &options.namespace,
+                    options.mode,
+                    &expectation.role,
+                )?;
+                line
+            };
             Some(line)
         }
         (Some(expectation), SpawnStdio::Detached) => {
             let path = log_path
                 .as_deref()
                 .expect("detached spawn must have produced a log path");
-            let line = read_ready_from_log(&mut child, path, options)?;
-            validate_ready_line(
-                loaded,
-                &line,
-                &options.namespace,
-                options.mode,
-                &expectation.role,
-            )?;
+            let line = if let Some(pattern) = expectation.stdout_pattern.as_deref() {
+                synthesize_ready_from_log_pattern(
+                    &mut child,
+                    path,
+                    pattern,
+                    loaded,
+                    options,
+                    &expectation.role,
+                )?
+            } else {
+                let line = read_ready_from_log(&mut child, path, options)?;
+                validate_ready_line(
+                    loaded,
+                    &line,
+                    &options.namespace,
+                    options.mode,
+                    &expectation.role,
+                )?;
+                line
+            };
             Some(line)
         }
         (None, _) => None,
@@ -605,6 +708,174 @@ fn read_ready_from_stdout(
         context: format!("ready-line wait failed: {error}"),
         log_path: None,
     })
+}
+
+/// Compile a stdout-pattern regex once and return a synthesized
+/// ready line whose `endpoint` is capture group 1 of the first
+/// matching stdout line (after stripping ANSI escapes). Used for
+/// shell sidecars (vite, etc.) that don't speak our native
+/// ready-line protocol but log their listening URL on startup.
+fn synthesize_ready_from_pattern(
+    stdout: ChildStdout,
+    pattern: &str,
+    loaded: &LoadedDescriptor,
+    options: &SpawnOptions,
+    role: &str,
+) -> Result<SidecarReadyLine, SpawnError> {
+    let regex = regex::Regex::new(pattern).map_err(|error| SpawnError::EarlyExit {
+        context: format!("invalid stdout_pattern {pattern:?}: {error}"),
+        log_path: None,
+    })?;
+    let timeout = options.ready_timeout.unwrap_or(DEFAULT_READY_TIMEOUT);
+    let started = Instant::now();
+    let reader = BufReader::new(stdout);
+    for line in reader.lines() {
+        let raw = line.map_err(|error| SpawnError::Io {
+            context: "reading sidecar stdout".to_string(),
+            error,
+        })?;
+        let stripped = strip_ansi(&raw);
+        if let Some(captures) = regex.captures(&stripped) {
+            let endpoint = captures
+                .get(1)
+                .map(|m| m.as_str().to_string())
+                .ok_or_else(|| SpawnError::UnexpectedReady {
+                    role: role.to_string(),
+                    line: stripped.clone(),
+                })?;
+            return Ok(synthesized_ready_line(loaded, options, role, endpoint));
+        }
+        if started.elapsed() >= timeout {
+            return Err(SpawnError::Timeout {
+                context: format!("{} stdout pattern", loaded.descriptor.app),
+                log_path: None,
+            });
+        }
+    }
+    Err(SpawnError::EarlyExit {
+        context: format!(
+            "{} closed stdout before matching pattern {pattern:?}",
+            loaded.descriptor.app
+        ),
+        log_path: None,
+    })
+}
+
+fn synthesize_ready_from_log_pattern(
+    child: &mut Child,
+    log_path: &Path,
+    pattern: &str,
+    loaded: &LoadedDescriptor,
+    options: &SpawnOptions,
+    role: &str,
+) -> Result<SidecarReadyLine, SpawnError> {
+    let regex = regex::Regex::new(pattern).map_err(|error| SpawnError::EarlyExit {
+        context: format!("invalid stdout_pattern {pattern:?}: {error}"),
+        log_path: Some(log_path.to_path_buf()),
+    })?;
+    let started = Instant::now();
+    let timeout = options.ready_timeout.unwrap_or(DEFAULT_READY_TIMEOUT);
+    loop {
+        if let Some(endpoint) = peek_pattern_in_log(log_path, &regex)? {
+            return Ok(synthesized_ready_line(loaded, options, role, endpoint));
+        }
+        if let Some(status) = child.try_wait().map_err(|error| SpawnError::Io {
+            context: "checking child status".to_string(),
+            error,
+        })? {
+            return Err(SpawnError::EarlyExit {
+                context: format!("sidecar exited before matching pattern with status {status}"),
+                log_path: Some(log_path.to_path_buf()),
+            });
+        }
+        if started.elapsed() >= timeout {
+            return Err(SpawnError::Timeout {
+                context: format!("{} stdout pattern", loaded.descriptor.app),
+                log_path: Some(log_path.to_path_buf()),
+            });
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn peek_pattern_in_log(
+    log_path: &Path,
+    regex: &regex::Regex,
+) -> Result<Option<String>, SpawnError> {
+    let file = match fs::File::open(log_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(SpawnError::Io {
+                context: format!("failed to open log {}", log_path.display()),
+                error,
+            })
+        }
+    };
+    for line in BufReader::new(file).lines() {
+        let line = line.map_err(|error| SpawnError::Io {
+            context: format!("failed to read log {}", log_path.display()),
+            error,
+        })?;
+        let stripped = strip_ansi(&line);
+        if let Some(captures) = regex.captures(&stripped) {
+            if let Some(m) = captures.get(1) {
+                return Ok(Some(m.as_str().to_string()));
+            }
+        }
+    }
+    Ok(None)
+}
+
+fn synthesized_ready_line(
+    loaded: &LoadedDescriptor,
+    options: &SpawnOptions,
+    role: &str,
+    endpoint: String,
+) -> SidecarReadyLine {
+    let stamp = build_stamp(&loaded.descriptor, &options.namespace, options.mode);
+    SidecarReadyLine::new(
+        stamp,
+        role.to_string(),
+        format!(
+            "{}-{}",
+            loaded.descriptor.app,
+            std::process::id().rem_euclid(1_000_000)
+        ),
+        Some(endpoint),
+        timestamp_now(),
+    )
+}
+
+fn timestamp_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before unix epoch");
+    format!("{}-{:03}", duration.as_secs(), duration.subsec_millis())
+}
+
+/// Strip ANSI escape codes from a stdout line so regex matches
+/// don't have to account for color codes vite/cargo/pnpm inject.
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                while let Some(&next) = chars.peek() {
+                    chars.next();
+                    if next.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn read_ready_from_log(
@@ -946,11 +1217,15 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
             },
             ready: Some(ReadyExpectation {
                 role: "agents-runtime".into(),
+                stdout_pattern: None,
             }),
             stamp_source: None,
             stamp_via_env: false,
             cwd: None,
             env: Default::default(),
+            endpoint_env: None,
+            inherits_env: Vec::new(),
+            inspect: None,
         };
 
         let manifest_dir = PathBuf::from("/tmp/example/stim-agents");
@@ -996,6 +1271,9 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
             stamp_via_env: true,
             cwd: None,
             env: Default::default(),
+            endpoint_env: None,
+            inherits_env: Vec::new(),
+            inspect: None,
         };
 
         let manifest_dir = PathBuf::from("/tmp/example/stim-agents");
@@ -1041,5 +1319,87 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
         assert!(envs
             .iter()
             .any(|(k, v)| k == "STIM_SIDECAR_NAMESPACE" && v.as_deref() == Some("default")));
+    }
+
+    #[test]
+    fn parses_inherits_env_and_endpoint_env_and_inspect_fields() {
+        let toml = r#"
+manifest_version = 1
+project = "stim"
+
+[[sidecars]]
+app = "agents"
+launch = { kind = "cargo", manifest_path = "Cargo.toml", args = ["serve"] }
+ready = { role = "agents-runtime" }
+endpoint_env = "STIM_AGENTS_ENDPOINT"
+inspect = { capabilities = ["runtime", "instances", "profiles"] }
+
+[[sidecars]]
+app = "tauri"
+stamp_via_env = true
+launch = { kind = "cargo", manifest_path = "apps/tauri/src-tauri/Cargo.toml" }
+inspect = { capabilities = ["host", "screenshot"], endpoint_kind = "tauri-ipc" }
+inherits_env = [
+  { name = "STIM_AGENTS_ENDPOINT", from = "agents.endpoint" },
+  { name = "STIM_AGENTS_INSTANCE_ID", from = "agents.instance_id" },
+]
+"#;
+        let manifest: SidecarManifest = toml::from_str(toml).expect("parse");
+        assert_eq!(manifest.sidecars.len(), 2);
+
+        let agents = &manifest.sidecars[0];
+        assert_eq!(agents.endpoint_env.as_deref(), Some("STIM_AGENTS_ENDPOINT"));
+        let inspect = agents.inspect.as_ref().expect("inspect spec parses");
+        assert_eq!(
+            inspect.capabilities,
+            vec!["runtime", "instances", "profiles"]
+        );
+        assert_eq!(inspect.endpoint_kind, InspectEndpointKind::Http);
+
+        let tauri = &manifest.sidecars[1];
+        assert_eq!(tauri.inherits_env.len(), 2);
+        assert_eq!(tauri.inherits_env[0].name, "STIM_AGENTS_ENDPOINT");
+        assert_eq!(tauri.inherits_env[0].from, "agents.endpoint");
+        let tauri_inspect = tauri.inspect.as_ref().expect("inspect spec parses");
+        assert_eq!(tauri_inspect.endpoint_kind, InspectEndpointKind::TauriIpc);
+    }
+
+    #[test]
+    fn parses_ready_with_stdout_pattern() {
+        let toml = r#"
+manifest_version = 1
+project = "stim-agents"
+
+[[sidecars]]
+app = "renderer"
+stamp_via_env = true
+launch = { kind = "shell", command = "pnpm", args = ["-C", "apps/renderer", "exec", "vite", "--port", "0"] }
+ready = { role = "renderer-delivery", stdout_pattern = "Local:\\s+(http://[^\\s]+)" }
+endpoint_env = "STIM_AGENTS_RENDERER_URL"
+"#;
+        let manifest: SidecarManifest = toml::from_str(toml).expect("parse");
+        let renderer = &manifest.sidecars[0];
+        let ready = renderer.ready.as_ref().expect("ready block");
+        assert_eq!(ready.role, "renderer-delivery");
+        assert_eq!(
+            ready.stdout_pattern.as_deref(),
+            Some(r"Local:\s+(http://[^\s]+)")
+        );
+        assert_eq!(
+            renderer.endpoint_env.as_deref(),
+            Some("STIM_AGENTS_RENDERER_URL")
+        );
+    }
+
+    #[test]
+    fn strip_ansi_removes_color_escapes() {
+        let raw = "\x1b[1m\x1b[92m  Local:\x1b[0m   http://127.0.0.1:1421/";
+        assert_eq!(strip_ansi(raw), "  Local:   http://127.0.0.1:1421/");
+    }
+
+    #[test]
+    fn strip_ansi_preserves_plain_text() {
+        let raw = "Local: http://127.0.0.1:1234/";
+        assert_eq!(strip_ansi(raw), "Local: http://127.0.0.1:1234/");
     }
 }
