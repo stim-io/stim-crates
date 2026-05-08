@@ -126,6 +126,19 @@ pub enum LaunchSpec {
         #[serde(default)]
         args: Vec<String>,
     },
+    /// Run an arbitrary executable. Used for non-cargo sidecars such
+    /// as `pnpm` scripts, vite dev servers, node binaries, or other
+    /// platform tools that the consumer treats as part of its
+    /// dev-loop process catalog.
+    ///
+    /// The descriptor's stamp args are appended AFTER `args`, so a
+    /// shell command that doesn't accept stim-stamp flags should
+    /// declare `stamp_via_env = true` instead.
+    Shell {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
 }
 
 /// A descriptor as loaded from a specific manifest file. Keeps the
@@ -422,7 +435,10 @@ pub fn build_command(
     let stamp = build_stamp(&loaded.descriptor, &options.namespace, options.mode);
     let stamp_args = create_stamp_args(&stamp);
 
-    let mut cmd = Command::new("cargo");
+    let mut cmd = match &loaded.descriptor.launch {
+        LaunchSpec::Cargo { .. } => Command::new("cargo"),
+        LaunchSpec::Shell { command, .. } => Command::new(command),
+    };
 
     match &loaded.descriptor.launch {
         LaunchSpec::Cargo {
@@ -444,6 +460,17 @@ pub fn build_command(
                 cmd.arg(flag);
             }
             cmd.arg("--");
+            for arg in args {
+                cmd.arg(arg);
+            }
+            for arg in &options.extra_args {
+                cmd.arg(arg);
+            }
+            for arg in stamp_args {
+                cmd.arg(arg);
+            }
+        }
+        LaunchSpec::Shell { args, .. } => {
             for arg in args {
                 cmd.arg(arg);
             }
@@ -748,6 +775,7 @@ role = "agents-runtime"
                 assert!(bin.is_none());
                 assert!(cargo_args.is_empty());
             }
+            other => panic!("expected Cargo launch, got {other:?}"),
         }
     }
 
@@ -953,5 +981,65 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
             .iter()
             .any(|a| a == "--stim-stamp-namespace=design"));
         assert_eq!(cmd.get_current_dir(), Some(workspace_root));
+    }
+
+    #[test]
+    fn build_command_handles_shell_launch_kind() {
+        let descriptor = SidecarDescriptor {
+            app: "renderer".into(),
+            launch: LaunchSpec::Shell {
+                command: "pnpm".into(),
+                args: vec!["-C".into(), "apps/renderer".into(), "dev".into()],
+            },
+            ready: None,
+            stamp_source: None,
+            stamp_via_env: true,
+            cwd: None,
+            env: Default::default(),
+        };
+
+        let manifest_dir = PathBuf::from("/tmp/example/stim-agents");
+        let manifest_path = manifest_dir.join("sidecars.toml");
+        let loaded = LoadedDescriptor {
+            project: "stim-agents".into(),
+            descriptor,
+            manifest_dir: manifest_dir.clone(),
+            manifest_path,
+        };
+
+        let workspace_root = Path::new("/tmp/example/stim-agents");
+        let options = SpawnOptions::new("default", SidecarMode::Dev, SpawnStdio::Inherit);
+
+        let cmd = build_command(&loaded, workspace_root, &options);
+        assert_eq!(
+            cmd.get_program().to_string_lossy(),
+            "pnpm",
+            "shell launch resolves to the declared command"
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "-C");
+        assert_eq!(args[1], "apps/renderer");
+        assert_eq!(args[2], "dev");
+        // Stamp args are appended even for shell launches; consumers
+        // that don't accept argv stamps opt into stamp_via_env (which
+        // also surfaces the namespace + mode in the env block).
+        assert!(args.iter().any(|a| a == "--stim-stamp-app=renderer"));
+
+        // stamp_via_env propagates STIM_SIDECAR_NAMESPACE / _MODE.
+        let envs: Vec<(String, Option<String>)> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(envs
+            .iter()
+            .any(|(k, v)| k == "STIM_SIDECAR_NAMESPACE" && v.as_deref() == Some("default")));
     }
 }
