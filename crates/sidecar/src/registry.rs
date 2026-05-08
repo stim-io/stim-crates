@@ -24,7 +24,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     identity::{
-        SidecarMode, SidecarStamp, SIDECAR_MODE_ENV, SIDECAR_NAMESPACE_ENV, SOURCE_TOOL_STIM_DEV,
+        SidecarMode, SidecarStamp, SIDECAR_APP_ENV, SIDECAR_MODE_ENV, SIDECAR_NAMESPACE_ENV,
+        SIDECAR_SOURCE_ENV, SOURCE_TOOL_STIM_DEV,
     },
     layout::SidecarLayout,
     ready::{wait_for_ready_line, SidecarReadyLine},
@@ -79,10 +80,9 @@ pub struct SidecarDescriptor {
     #[serde(default)]
     pub stamp_source: Option<String>,
 
-    /// Whether to also export `SIDECAR_NAMESPACE_ENV` and
-    /// `SIDECAR_MODE_ENV` to the spawned process's environment.
-    /// CLI args carry the same data; this is for sidecars that read the
-    /// stamp via env (e.g. Tauri host).
+    /// Whether to export the complete sidecar stamp to the spawned
+    /// process's environment instead of argv. This is for strict-CLI
+    /// sidecars that reject unknown stamp flags.
     #[serde(default)]
     pub stamp_via_env: bool,
 
@@ -546,8 +546,10 @@ pub fn build_command(
         cmd.env(key, value);
     }
     if loaded.descriptor.stamp_via_env {
+        cmd.env(SIDECAR_APP_ENV, &stamp.app);
         cmd.env(SIDECAR_NAMESPACE_ENV, &options.namespace);
         cmd.env(SIDECAR_MODE_ENV, options.mode.as_str());
+        cmd.env(SIDECAR_SOURCE_ENV, &stamp.source);
     }
     for (key, value) in &options.extra_env {
         cmd.env(key, value);
@@ -1240,7 +1242,7 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
             "stamp_via_env should suppress argv stamp flags"
         );
 
-        // stamp_via_env propagates STIM_SIDECAR_NAMESPACE / _MODE.
+        // stamp_via_env propagates the complete stamp via env.
         let envs: Vec<(String, Option<String>)> = cmd
             .get_envs()
             .map(|(k, v)| {
@@ -1252,7 +1254,16 @@ launch = { kind = "cargo", manifest_path = "Cargo.toml" }
             .collect();
         assert!(envs
             .iter()
+            .any(|(k, v)| k == "STIM_SIDECAR_APP" && v.as_deref() == Some("renderer")));
+        assert!(envs
+            .iter()
             .any(|(k, v)| k == "STIM_SIDECAR_NAMESPACE" && v.as_deref() == Some("default")));
+        assert!(envs
+            .iter()
+            .any(|(k, v)| k == "STIM_SIDECAR_MODE" && v.as_deref() == Some("dev")));
+        assert!(envs
+            .iter()
+            .any(|(k, v)| k == "STIM_SIDECAR_SOURCE" && v.as_deref() == Some("tool:stim-dev")));
     }
 
     #[test]
