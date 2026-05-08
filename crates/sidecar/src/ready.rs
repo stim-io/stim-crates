@@ -17,7 +17,16 @@ pub struct SidecarReadyLine {
     pub stamp: SidecarStamp,
     pub role: String,
     pub instance_id: String,
+    /// Business endpoint the sidecar exposes to product consumers
+    /// (e.g. agents/controller's HTTP base URL). Stays unchanged.
     pub endpoint: Option<String>,
+    /// Address of the sidecar's `SidecarRuntime` listener — the
+    /// unified socket fact stim-dev uses for heartbeat + event
+    /// triggers. Sidecars that don't yet adopt SidecarRuntime
+    /// leave this as None; older sidecars without the field deserialize
+    /// to None (the field is `serde(default)`).
+    #[serde(default)]
+    pub runtime_endpoint: Option<String>,
     pub ready_at: String,
 }
 
@@ -35,8 +44,14 @@ impl SidecarReadyLine {
             role,
             instance_id,
             endpoint,
+            runtime_endpoint: None,
             ready_at,
         }
+    }
+
+    pub fn with_runtime_endpoint(mut self, runtime_endpoint: impl Into<String>) -> Self {
+        self.runtime_endpoint = Some(runtime_endpoint.into());
+        self
     }
 
     pub fn is_ready_line(&self) -> bool {
