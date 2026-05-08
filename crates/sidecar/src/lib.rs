@@ -6,3 +6,4 @@ pub mod ready;
 pub mod registry;
 pub mod runtime;
 pub mod stamp;
+pub mod stdout;

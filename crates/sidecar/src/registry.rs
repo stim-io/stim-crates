@@ -701,15 +701,7 @@ fn synthesize_ready_from_pattern(
             context: "reading sidecar stdout".to_string(),
             error,
         })?;
-        let stripped = strip_ansi(&raw);
-        if let Some(captures) = regex.captures(&stripped) {
-            let endpoint = captures
-                .get(1)
-                .map(|m| m.as_str().to_string())
-                .ok_or_else(|| SpawnError::UnexpectedReady {
-                    role: role.to_string(),
-                    line: stripped.clone(),
-                })?;
+        if let Some(endpoint) = crate::stdout::extract_endpoint(&raw, &regex) {
             return Ok(synthesized_ready_line(loaded, options, role, endpoint));
         }
         if started.elapsed() >= timeout {
@@ -784,11 +776,8 @@ fn peek_pattern_in_log(
             context: format!("failed to read log {}", log_path.display()),
             error,
         })?;
-        let stripped = strip_ansi(&line);
-        if let Some(captures) = regex.captures(&stripped) {
-            if let Some(m) = captures.get(1) {
-                return Ok(Some(m.as_str().to_string()));
-            }
+        if let Some(endpoint) = crate::stdout::extract_endpoint(&line, regex) {
+            return Ok(Some(endpoint));
         }
     }
     Ok(None)
@@ -820,29 +809,6 @@ fn timestamp_now() -> String {
         .duration_since(UNIX_EPOCH)
         .expect("system clock before unix epoch");
     format!("{}-{:03}", duration.as_secs(), duration.subsec_millis())
-}
-
-/// Strip ANSI escape codes from a stdout line so regex matches
-/// don't have to account for color codes vite/cargo/pnpm inject.
-fn strip_ansi(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                while let Some(&next) = chars.peek() {
-                    chars.next();
-                    if next.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
 }
 
 fn read_ready_from_log(
@@ -1350,15 +1316,6 @@ endpoint_env = "STIM_AGENTS_RENDERER_URL"
         );
     }
 
-    #[test]
-    fn strip_ansi_removes_color_escapes() {
-        let raw = "\x1b[1m\x1b[92m  Local:\x1b[0m   http://127.0.0.1:1421/";
-        assert_eq!(strip_ansi(raw), "  Local:   http://127.0.0.1:1421/");
-    }
-
-    #[test]
-    fn strip_ansi_preserves_plain_text() {
-        let raw = "Local: http://127.0.0.1:1234/";
-        assert_eq!(strip_ansi(raw), "Local: http://127.0.0.1:1234/");
-    }
+    // strip_ansi tests live in `crate::stdout` now (the canonical
+    // home for those helpers).
 }
