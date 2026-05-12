@@ -1,6 +1,6 @@
 # stim-crates
 
-Reusable Rust platform and sidecar primitives for the stim stack. Originally extracted from `stim-dev` so that the `stim-dev` repo can be reserved as the home of the development CLI binary.
+Reusable Rust platform and sidecar primitives for the stim stack. These crates hold consumer-side primitives; lifecycle and inspect orchestration are consumed through the external `sidecar` CLI.
 
 ## Crates
 

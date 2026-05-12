@@ -1,5 +1,5 @@
 use stim_sidecar::{
-    identity::{SidecarMode, SidecarStamp, SOURCE_TOOL_STIM_DEV},
+    identity::{SidecarMode, SidecarStamp, SOURCE_TOOL_SIDECAR},
     inspect::{EmptyInspectPayload, LiveInspectEnvelope, LiveInspectState},
 };
 
@@ -11,7 +11,7 @@ fn inspect_is_live_fact() {
             app: "controller".into(),
             namespace: "default".into(),
             mode: SidecarMode::Dev,
-            source: SOURCE_TOOL_STIM_DEV.into(),
+            source: SOURCE_TOOL_SIDECAR.into(),
         },
         role: Some("controller-runtime".into()),
         instance_id: Some("controller-1".into()),

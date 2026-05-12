@@ -9,7 +9,7 @@ pub const SIDECAR_MODE_ENV: &str = "STIM_SIDECAR_MODE";
 pub const SIDECAR_SOURCE_ENV: &str = "STIM_SIDECAR_SOURCE";
 pub const SOURCE_APP_PACKAGED: &str = "app:packaged";
 pub const SOURCE_APP_TAURI: &str = "app:tauri";
-pub const SOURCE_TOOL_STIM_DEV: &str = "tool:stim-dev";
+pub const SOURCE_TOOL_SIDECAR: &str = "tool:sidecar";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

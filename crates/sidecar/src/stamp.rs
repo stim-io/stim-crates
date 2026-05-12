@@ -2,10 +2,10 @@ use std::str::FromStr;
 
 use crate::identity::{SidecarMode, SidecarStamp};
 
-pub const STAMP_APP_FLAG: &str = "--stim-stamp-app";
-pub const STAMP_NAMESPACE_FLAG: &str = "--stim-stamp-namespace";
-pub const STAMP_MODE_FLAG: &str = "--stim-stamp-mode";
-pub const STAMP_SOURCE_FLAG: &str = "--stim-stamp-source";
+pub const STAMP_APP_FLAG: &str = "--sidecar-stamp-app";
+pub const STAMP_NAMESPACE_FLAG: &str = "--sidecar-stamp-namespace";
+pub const STAMP_MODE_FLAG: &str = "--sidecar-stamp-mode";
+pub const STAMP_SOURCE_FLAG: &str = "--sidecar-stamp-source";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StampError {

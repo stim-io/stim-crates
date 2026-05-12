@@ -3,10 +3,11 @@
 //!
 //! The contract this module embodies is intentionally tiny:
 //!
-//! 1. Each sidecar binds a TCP listener on `127.0.0.1:0` (OS picks
-//!    a free port) and publishes the address via its ready line's
-//!    new `runtime_endpoint` field.
-//! 2. stim-dev (or any other coordinator) connects to that endpoint
+//! 1. On Unix platforms each sidecar binds a local Unix domain
+//!    socket and publishes it as `unix:///absolute/path.sock` via
+//!    its ready line's `runtime_endpoint` field. Non-Unix platforms
+//!    keep a TCP fallback as `tcp://127.0.0.1:<port>`.
+//! 2. The external sidecar CLI (or any other coordinator) connects to that endpoint
 //!    and speaks NDJSON-framed control plane messages:
 //!      - `{"kind":"ping","seq":N}` ↔ `{"kind":"pong","seq":N}`
 //!      - `{"kind":"event","id":"<uuid>","verb":"<name>","payload":...}` ↔
@@ -25,14 +26,31 @@
 //! API on a separate listener (published as the existing `endpoint`
 //! field); Tauri host serves only the sidecar runtime.
 
-use std::{future::Future, net::SocketAddr, pin::Pin, sync::Arc};
+use std::{
+    env,
+    future::Future,
+    io,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
+
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    net::{TcpListener, TcpStream},
+    io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
+    net::TcpListener,
 };
+
+#[cfg(unix)]
+use tokio::net::UnixListener;
+
+const INSPECT_SOCKET_ENV: &str = "SIDECAR_INSPECT_SOCKET";
 
 /// Frame `kind` discriminator strings.
 pub const FRAME_KIND_PING: &str = "ping";
@@ -149,19 +167,144 @@ where
     }
 }
 
-/// Bind a TCP listener on `127.0.0.1:0` and return both the
-/// listener (for `serve`) and the bound socket address (to publish
-/// via the ready line's `runtime_endpoint` field).
-pub async fn bind() -> std::io::Result<(SocketAddr, TcpListener)> {
+/// Listener returned by [`bind`]. Unix platforms use a Unix domain
+/// socket; non-Unix platforms use the TCP fallback.
+pub enum RuntimeListener {
+    #[cfg(unix)]
+    Unix {
+        endpoint: String,
+        path: PathBuf,
+        listener: UnixListener,
+    },
+    Tcp {
+        endpoint: String,
+        listener: TcpListener,
+    },
+}
+
+impl RuntimeListener {
+    pub fn endpoint(&self) -> &str {
+        match self {
+            #[cfg(unix)]
+            Self::Unix { endpoint, .. } => endpoint,
+            Self::Tcp { endpoint, .. } => endpoint,
+        }
+    }
+}
+
+/// Bind the platform runtime socket and return both the endpoint
+/// string to publish in the ready line and the listener for
+/// [`serve`].
+pub async fn bind() -> std::io::Result<(String, RuntimeListener)> {
+    if let Some(endpoint) = env::var(INSPECT_SOCKET_ENV)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return bind_configured(&endpoint).await;
+    }
+
+    #[cfg(unix)]
+    {
+        let path = runtime_socket_path();
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path)?;
+        let endpoint = format!("unix://{}", path.display());
+        Ok((
+            endpoint.clone(),
+            RuntimeListener::Unix {
+                endpoint,
+                path,
+                listener,
+            },
+        ))
+    }
+
+    #[cfg(not(unix))]
+    {
+        bind_tcp().await
+    }
+}
+
+async fn bind_configured(endpoint: &str) -> std::io::Result<(String, RuntimeListener)> {
+    #[cfg(unix)]
+    if let Some(path) = endpoint.strip_prefix("unix://") {
+        if path.is_empty() || !path.starts_with('/') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SIDECAR_INSPECT_SOCKET unix endpoint must use unix:///absolute/path.sock",
+            ));
+        }
+        let path = PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let _ = std::fs::remove_file(&path);
+        let listener = UnixListener::bind(&path)?;
+        let endpoint = format!("unix://{}", path.display());
+        return Ok((
+            endpoint.clone(),
+            RuntimeListener::Unix {
+                endpoint,
+                path,
+                listener,
+            },
+        ));
+    }
+
+    if let Some(address) = endpoint.strip_prefix("tcp://") {
+        let listener = TcpListener::bind(address).await?;
+        let addr = listener.local_addr()?;
+        let endpoint = format!("tcp://{addr}");
+        return Ok((
+            endpoint.clone(),
+            RuntimeListener::Tcp { endpoint, listener },
+        ));
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "SIDECAR_INSPECT_SOCKET must use unix:///absolute/path.sock or tcp://host:port",
+    ))
+}
+
+#[cfg(not(unix))]
+async fn bind_tcp() -> std::io::Result<(String, RuntimeListener)> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
-    Ok((addr, listener))
+    let endpoint = format!("tcp://{addr}");
+    Ok((
+        endpoint.clone(),
+        RuntimeListener::Tcp { endpoint, listener },
+    ))
+}
+
+#[cfg(unix)]
+fn runtime_socket_path() -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+    PathBuf::from("/tmp").join(format!(
+        "stim-sidecar-runtime-{}-{counter}.sock",
+        std::process::id()
+    ))
 }
 
 /// Run the accept-and-dispatch loop on `listener`, forwarding
 /// non-heartbeat events to `handler`. Returns when the listener
 /// closes (typically a Tokio shutdown).
-pub async fn serve<H: EventHandler>(listener: TcpListener, handler: H) -> std::io::Result<()> {
+pub async fn serve<H: EventHandler>(listener: RuntimeListener, handler: H) -> std::io::Result<()> {
+    match listener {
+        #[cfg(unix)]
+        RuntimeListener::Unix { listener, path, .. } => {
+            let result = serve_unix(listener, handler).await;
+            let _ = std::fs::remove_file(path);
+            result
+        }
+        RuntimeListener::Tcp { listener, .. } => serve_tcp(listener, handler).await,
+    }
+}
+
+async fn serve_tcp<H: EventHandler>(listener: TcpListener, handler: H) -> std::io::Result<()> {
     let handler = Arc::new(handler);
     loop {
         let (stream, _peer) = match listener.accept().await {
@@ -177,11 +320,29 @@ pub async fn serve<H: EventHandler>(listener: TcpListener, handler: H) -> std::i
     }
 }
 
-async fn handle_connection<H: EventHandler>(
-    stream: TcpStream,
-    handler: Arc<H>,
-) -> std::io::Result<()> {
-    let (read_half, mut write_half) = stream.into_split();
+#[cfg(unix)]
+async fn serve_unix<H: EventHandler>(listener: UnixListener, handler: H) -> std::io::Result<()> {
+    let handler = Arc::new(handler);
+    loop {
+        let (stream, _peer) = match listener.accept().await {
+            Ok(v) => v,
+            Err(error) => return Err(error),
+        };
+        let h = Arc::clone(&handler);
+        tokio::spawn(async move {
+            if let Err(error) = handle_connection(stream, h).await {
+                eprintln!("sidecar runtime connection error: {error}");
+            }
+        });
+    }
+}
+
+async fn handle_connection<H, S>(stream: S, handler: Arc<H>) -> std::io::Result<()>
+where
+    H: EventHandler,
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let (read_half, mut write_half) = tokio::io::split(stream);
     let mut reader = BufReader::new(read_half).lines();
     while let Some(line) = reader.next_line().await? {
         if line.trim().is_empty() {
@@ -219,10 +380,10 @@ async fn dispatch<H: EventHandler>(handler: &Arc<H>, frame: Frame) -> Option<Fra
     }
 }
 
-async fn write_frame(
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
-    frame: &Frame,
-) -> std::io::Result<()> {
+async fn write_frame<W>(writer: &mut W, frame: &Frame) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
     let mut bytes = serde_json::to_vec(frame).map_err(|error| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,

@@ -4,11 +4,11 @@
 
 `stim-crates` is the boundary for reusable Rust platform/sidecar libraries shared across the stim stack.
 
-This repo owns business-agnostic primitives: platform facts (paths / processes / networking / environment / locks / OS detection), sidecar identity / namespace / layout / ready-line / stamp / inspect contracts, and stamped-process matching. These primitives are consumed by any Rust component in the stack — `stim`, the `stim-dev` CLI, `stim-agents` — without dragging product semantics across repo boundaries.
+This repo owns business-agnostic primitives: platform facts (paths / processes / networking / environment / locks / OS detection), sidecar identity / namespace / layout / ready-line / stamp / inspect contracts, and stamped-process matching. These primitives are consumed by Rust components in the stack — `stim`, `stim-agents`, and future sidecars — without dragging product semantics across repo boundaries.
 
 This repo does NOT own:
 
-- product CLI tooling (lives in `stim-dev`).
+- product CLI tooling or lifecycle orchestration (lives in the external `sidecar` CLI when product-neutral, or in provider-owned inspect events when product-specific).
 - product harnesses, scenarios, or chat acceptance (each consumer keeps its own).
 - runtime sidecar implementations (each consumer wraps these primitives in its own sidecar binary).
 
@@ -18,7 +18,7 @@ This repo does NOT own:
 - Prefer small focused crates with concrete ownership over a broad utility crate.
 - Keep the Cargo workspace minimal. If a new crate is just renaming an existing slice, push back.
 - Releases are versioned commits + green guard. External publish flow is deferred until consumers outside this workspace need it.
-- Do not let CLI growth back-fill into this repo. The `stim-dev` repo is the eventual home for the development CLI binary.
+- Do not let CLI growth back-fill into this repo. External `sidecar` owns lifecycle/inspect routing; this repo only owns consumer-side primitives used by provider binaries.
 
 ## Current Crates
 

@@ -11,7 +11,7 @@ use std::{
 use crate::{
     identity::{
         SidecarMode, SidecarStamp, SIDECAR_APP_ENV, SIDECAR_MODE_ENV, SIDECAR_NAMESPACE_ENV,
-        SIDECAR_SOURCE_ENV, SOURCE_TOOL_STIM_DEV,
+        SIDECAR_SOURCE_ENV, SOURCE_TOOL_SIDECAR,
     },
     layout::SidecarLayout,
     ready::SidecarReadyLine,
@@ -225,7 +225,7 @@ pub fn build_stamp(
         source: descriptor
             .stamp_source
             .clone()
-            .unwrap_or_else(|| SOURCE_TOOL_STIM_DEV.to_string()),
+            .unwrap_or_else(|| SOURCE_TOOL_SIDECAR.to_string()),
     }
 }
 
