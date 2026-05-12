@@ -279,10 +279,10 @@ mod cmd_build {
         assert_eq!(args[2], "/tmp/example/stim-agents/Cargo.toml");
         assert_eq!(args[3], "--");
         assert_eq!(args[4], "serve");
-        assert!(args[5..].iter().any(|a| a == "--stim-stamp-app=agents"));
+        assert!(args[5..].iter().any(|a| a == "--sidecar-stamp-app=agents"));
         assert!(args[5..]
             .iter()
-            .any(|a| a == "--stim-stamp-namespace=design"));
+            .any(|a| a == "--sidecar-stamp-namespace=design"));
         assert_eq!(cmd.get_current_dir(), Some(workspace));
     }
 
@@ -317,7 +317,7 @@ mod cmd_build {
         assert_eq!(args[1], "apps/renderer");
         assert_eq!(args[2], "dev");
         assert!(
-            !args.iter().any(|a| a.starts_with("--stim-stamp-")),
+            !args.iter().any(|a| a.starts_with("--sidecar-stamp-")),
             "stamp_via_env should suppress argv stamp flags"
         );
 
@@ -341,7 +341,7 @@ mod cmd_build {
             .any(|(k, v)| k == "STIM_SIDECAR_MODE" && v.as_deref() == Some("dev")));
         assert!(envs
             .iter()
-            .any(|(k, v)| k == "STIM_SIDECAR_SOURCE" && v.as_deref() == Some("tool:stim-dev")));
+            .any(|(k, v)| k == "STIM_SIDECAR_SOURCE" && v.as_deref() == Some("tool:sidecar")));
     }
 }
 

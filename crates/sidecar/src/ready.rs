@@ -20,8 +20,8 @@ pub struct SidecarReadyLine {
     /// Business endpoint the sidecar exposes to product consumers
     /// (e.g. agents/controller's HTTP base URL). Stays unchanged.
     pub endpoint: Option<String>,
-    /// Address of the sidecar's `SidecarRuntime` listener — the
-    /// unified socket fact stim-dev uses for heartbeat + event
+    /// Endpoint of the sidecar's `SidecarRuntime` listener — the
+    /// unified socket fact external sidecar uses for heartbeat + event
     /// triggers. Sidecars that don't yet adopt SidecarRuntime
     /// leave this as None; older sidecars without the field deserialize
     /// to None (the field is `serde(default)`).

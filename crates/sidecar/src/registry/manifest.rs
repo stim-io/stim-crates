@@ -51,7 +51,7 @@ pub struct SidecarDescriptor {
     pub ready: Option<ReadyExpectation>,
 
     /// Optional override for the stamp source label.
-    /// Defaults to `tool:stim-dev`.
+    /// Defaults to `tool:sidecar`.
     #[serde(default)]
     pub stamp_source: Option<String>,
 
@@ -152,7 +152,7 @@ pub enum LaunchSpec {
     /// dev-loop process catalog.
     ///
     /// The descriptor's stamp args are appended AFTER `args`, so a
-    /// shell command that doesn't accept stim-stamp flags should
+    /// shell command that doesn't accept sidecar-stamp flags should
     /// declare `stamp_via_env = true` instead.
     Shell {
         command: String,

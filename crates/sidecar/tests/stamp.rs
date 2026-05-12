@@ -1,5 +1,5 @@
 use stim_sidecar::{
-    identity::{SidecarMode, SidecarStamp, SOURCE_TOOL_STIM_DEV},
+    identity::{SidecarMode, SidecarStamp, SOURCE_TOOL_SIDECAR},
     stamp::{
         command_contains_stamp, create_stamp_args, read_stamp, STAMP_APP_FLAG, STAMP_MODE_FLAG,
     },
@@ -11,7 +11,7 @@ fn roundtrips_stamp_args() {
         app: "controller".into(),
         namespace: "default".into(),
         mode: SidecarMode::Dev,
-        source: SOURCE_TOOL_STIM_DEV.into(),
+        source: SOURCE_TOOL_SIDECAR.into(),
     };
     let args = create_stamp_args(&stamp);
 
@@ -23,9 +23,9 @@ fn roundtrips_stamp_args() {
 fn rejects_runtime_mode_flag() {
     let args = vec![
         format!("{STAMP_APP_FLAG}=controller"),
-        "--stim-stamp-namespace=default".into(),
+        "--sidecar-stamp-namespace=default".into(),
         format!("{STAMP_MODE_FLAG}=runtime-mode"),
-        "--stim-stamp-source=tool:stim-dev".into(),
+        "--sidecar-stamp-source=tool:sidecar".into(),
     ];
 
     assert!(read_stamp(&args).is_err());
@@ -34,12 +34,12 @@ fn rejects_runtime_mode_flag() {
 #[test]
 fn matches_split_flags() {
     assert!(command_contains_stamp(
-        "stim-controller --stim-stamp-app=controller",
+        "stim-controller --sidecar-stamp-app=controller",
         STAMP_APP_FLAG,
         "controller"
     ));
     assert!(command_contains_stamp(
-        "stim-controller --stim-stamp-app controller",
+        "stim-controller --sidecar-stamp-app controller",
         STAMP_APP_FLAG,
         "controller"
     ));

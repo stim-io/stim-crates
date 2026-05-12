@@ -7,11 +7,11 @@ use stim_platform::process::{
 #[test]
 fn parses_spaced_commands() {
     assert_eq!(
-        parse_ps_line("123 1 stim-controller --stim-stamp-app=controller"),
+        parse_ps_line("123 1 stim-controller --sidecar-stamp-app=controller"),
         Some(ProcessSnapshot {
             pid: 123,
             ppid: 1,
-            command: "stim-controller --stim-stamp-app=controller".into(),
+            command: "stim-controller --sidecar-stamp-app=controller".into(),
         })
     );
 }
